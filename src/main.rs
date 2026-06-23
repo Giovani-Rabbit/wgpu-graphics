@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
 
@@ -21,9 +22,7 @@ impl State {
     async fn new(window: Arc<Window>) -> State {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             #[cfg(not(target_arch = "wasm32"))]
-            backends: wgpu::Backends::PRIMARY,
-            #[cfg(target_arch = "wasm32")]
-            backends: wgpu::Backends::GL,
+            backends: wgpu::Backends::VULKAN,
             flags: Default::default(),
             memory_budget_thresholds: Default::default(),
             backend_options: Default::default(),
@@ -34,6 +33,7 @@ impl State {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .unwrap();
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
@@ -85,6 +85,13 @@ impl State {
 
         // reconfigure the surface
         self.configure_surface();
+    }
+
+    fn handle_key(&self, event_loop: &ActiveEventLoop, code: KeyCode, is_pressed: bool) {
+        match (code, is_pressed) {
+            (KeyCode::Escape, true) => event_loop.exit(),
+            _ => {}
+        }
     }
 
     fn render(&mut self) {
@@ -193,6 +200,15 @@ impl ApplicationHandler for App {
                 // here as this event is always followed up by redraw request.
                 state.resize(size);
             }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(code),
+                        state: key_state,
+                        ..
+                    },
+                ..
+            } => state.handle_key(event_loop, code, key_state.is_pressed()),
             _ => (),
         }
     }
