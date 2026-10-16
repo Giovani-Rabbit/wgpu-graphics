@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalPosition,
     event::{KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
@@ -13,15 +14,16 @@ struct State {
     window: Arc<Window>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    size: winit::dpi::PhysicalSize<u32>,
     surface: wgpu::Surface<'static>,
-    surface_format: wgpu::TextureFormat,
+    surface_config: wgpu::SurfaceConfiguration,
+    is_surface_configured: bool,
+
+    cursor_position: PhysicalPosition<f64>,
 }
 
 impl State {
     async fn new(window: Arc<Window>) -> State {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            #[cfg(not(target_arch = "wasm32"))]
             backends: wgpu::Backends::VULKAN,
             flags: Default::default(),
             memory_budget_thresholds: Default::default(),
@@ -29,8 +31,15 @@ impl State {
             display: None,
         });
 
+        let surface = instance.create_surface(window.clone()).unwrap();
+
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+                apply_limit_buckets: true,
+            })
             .await
             .unwrap();
 
@@ -40,51 +49,48 @@ impl State {
             .unwrap();
 
         let size = window.inner_size();
+        let surface_caps = surface.get_capabilities(&adapter);
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .copied()
+            .unwrap_or(surface_caps.formats[0]);
 
-        let surface = instance.create_surface(window.clone()).unwrap();
-        let cap = surface.get_capabilities(&adapter);
-        let surface_format = cap.formats[0];
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            view_formats: vec![surface_format.add_srgb_suffix()],
+            width: size.width,
+            height: size.height,
+            desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            alpha_mode: surface_caps.alpha_modes[0],
+            present_mode: surface_caps.present_modes[0],
+        };
 
-        let state = State {
+        surface.configure(&device, &surface_config);
+
+        State {
             instance,
             window,
             device,
             queue,
-            size,
             surface,
-            surface_format,
-        };
+            surface_config,
+            is_surface_configured: false,
 
-        // Configure surface for the first time
-        state.configure_surface();
-
-        state
+            cursor_position: Default::default(),
+        }
     }
 
-    fn get_window(&self) -> &Window {
-        &self.window
-    }
-
-    fn configure_surface(&self) {
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: self.surface_format,
-            // Request compatibility with the sRGB-format texture view we‘re going to create later.
-            view_formats: vec![self.surface_format.add_srgb_suffix()],
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            width: self.size.width,
-            height: self.size.height,
-            desired_maximum_frame_latency: 2,
-            present_mode: wgpu::PresentMode::AutoVsync,
-        };
-        self.surface.configure(&self.device, &surface_config);
-    }
-
-    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        self.size = new_size;
-
-        // reconfigure the surface
-        self.configure_surface();
+    fn resize(&mut self, width: u32, height: u32) {
+        if width > 0 && height > 0 {
+            self.surface_config.width = width;
+            self.surface_config.height = height;
+            self.surface.configure(&self.device, &self.surface_config);
+            self.is_surface_configured = true;
+        }
     }
 
     fn handle_key(&self, event_loop: &ActiveEventLoop, code: KeyCode, is_pressed: bool) {
@@ -94,72 +100,76 @@ impl State {
         }
     }
 
+    fn update(&mut self) {}
+
     fn render(&mut self) {
-        // Create texture view.
-        // NOTE: We must handle Timeout because the surface may be unavailable
-        // (e.g., when the window is occluded on macOS).
+        self.window.request_redraw();
+
+        if !self.is_surface_configured {
+            return;
+        }
+
         let surface_texture = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture) => texture,
-            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return,
-            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                drop(texture);
-                self.configure_surface();
-                return;
-            }
+            wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
+            wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => surface_texture,
+            wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Validation => return,
             wgpu::CurrentSurfaceTexture::Outdated => {
-                self.configure_surface();
+                self.surface.configure(&self.device, &self.surface_config);
                 return;
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                unreachable!("No error scope registered, so validation errors will panic")
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface = self.instance.create_surface(self.window.clone()).unwrap();
-                self.configure_surface();
                 return;
             }
         };
+
         let texture_view = surface_texture
             .texture
-            .create_view(&wgpu::TextureViewDescriptor {
-                // Without add_srgb_suffix() the image we will be working with
-                // might not be "gamma correct".
-                format: Some(self.surface_format.add_srgb_suffix()),
-                ..Default::default()
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
             });
 
-        // Renders a GREEN screen
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        // Create the renderpass which will clear the screen.
-        let renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: None,
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &texture_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLUE),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let wwn = self.surface_config.width;
+        let whn = self.surface_config.height;
 
-        // If you wanted to call any drawing commands, they would go here.
+        let red = self.cursor_position.x / wwn as f64;
+        let green = self.cursor_position.x / wwn as f64;
+        let blue = self.cursor_position.y / whn as f64;
 
-        // End the renderpass.
-        drop(renderpass);
+        println!("{red}, {green}, {blue}");
 
-        // Submit the command in the queue to execute
-        // self.queue.submit([encoder.finish()]);
-        self.window.pre_present_notify();
-        // self.queue.present(surface_texture);
+        {
+            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: red,
+                            g: green,
+                            b: blue,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
 
-        self.queue.submit(std::iter::once(encoder.finish())); // aqui sim usa a queue
-        surface_texture.present(); // aqui presenta a textura, não a queue
+        self.queue.submit(std::iter::once(encoder.finish())); //accept anything that implements IntoIter
+        self.queue.present(surface_texture);
     }
 }
 
@@ -170,15 +180,13 @@ struct App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // Create window object
         let window = Arc::new(
             event_loop
                 .create_window(Window::default_attributes())
                 .unwrap(),
         );
 
-        let state = pollster::block_on(State::new(window.clone()));
-        self.state = Some(state);
+        self.state = Some(pollster::block_on(State::new(window.clone())));
 
         window.request_redraw();
     }
@@ -191,14 +199,11 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                state.update();
                 state.render();
-                // Emits a new redraw requested event.
-                state.get_window().request_redraw();
             }
             WindowEvent::Resized(size) => {
-                // Reconfigures the size of the surface. We do not re-render
-                // here as this event is always followed up by redraw request.
-                state.resize(size);
+                state.resize(size.width, size.height);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -209,31 +214,20 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => state.handle_key(event_loop, code, key_state.is_pressed()),
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => state.cursor_position = position,
             _ => (),
         }
     }
 }
 
 fn main() {
-    // wgpu uses `log` for all of our logging, so we initialize a logger with the `env_logger` crate.
-    //
-    // To change the log level, set the `RUST_LOG` environment variable. See the `env_logger`
-    // documentation for more information.
     env_logger::init();
 
     let event_loop = EventLoop::new().unwrap();
-
-    // When the current loop iteration finishes, immediately begin a new
-    // iteration regardless of whether or not new events are available to
-    // process. Preferred for applications that want to render as fast as
-    // possible, like games.
     event_loop.set_control_flow(ControlFlow::Poll);
-
-    // When the current loop iteration finishes, suspend the thread until
-    // another event arrives. Helps keeping CPU utilization low if nothing
-    // is happening, which is preferred if the application might be idling in
-    // the background.
-    // event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = App::default();
     event_loop.run_app(&mut app).unwrap();
