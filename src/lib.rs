@@ -128,9 +128,9 @@ impl State {
 
         surface.configure(&device, &surface_config);
 
-        let diffuse_bytes = include_bytes!("wall.jpg");
+        let diffuse_bytes = include_bytes!("crazy.jpg");
         let diffuse_texture =
-            texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "wall.jpg").unwrap();
+            texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "crazy.jpg").unwrap();
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
