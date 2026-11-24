@@ -24,7 +24,6 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
-    num_vertices: u32,
     diffuse_bind_group: wgpu::BindGroup,
     diffuse_texture: texture::Texture,
     camera: Camera,
@@ -289,7 +288,6 @@ impl State {
         });
 
         let num_indices = INDICES.len() as u32;
-        let num_vertices = VERTICES.len() as u32;
 
         State {
             instance,
@@ -303,7 +301,6 @@ impl State {
             vertex_buffer,
             index_buffer,
             num_indices,
-            num_vertices,
             diffuse_bind_group,
             diffuse_texture,
             camera,
