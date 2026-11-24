@@ -22,6 +22,8 @@ struct State {
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    num_indices: u32,
     num_vertices: u32,
     diffuse_bind_group: wgpu::BindGroup,
     diffuse_texture: texture::Texture,
@@ -65,18 +67,28 @@ impl Vertex {
 
 const VERTICES: &[Vertex] = &[
     Vertex {
-        position: [0.0, 0.5, 0.0],
-        texture_coords: [0.5, 0.0],
-    }, // topo
+        position: [-0.0868241, 0.49240386, 0.0],
+        texture_coords: [0.4131759, 0.00759614],
+    },
     Vertex {
-        position: [-0.5, -0.5, 0.0],
-        texture_coords: [0.0, 1.0],
-    }, // esquerda
+        position: [-0.49513406, 0.06958647, 0.0],
+        texture_coords: [0.0048659444, 0.43041354],
+    },
     Vertex {
-        position: [0.5, -0.5, 0.0],
-        texture_coords: [1.0, 1.0],
-    }, // direita
+        position: [-0.21918549, -0.44939706, 0.0],
+        texture_coords: [0.28081453, 0.949397],
+    },
+    Vertex {
+        position: [0.35966998, -0.3473291, 0.0],
+        texture_coords: [0.85967, 0.84732914],
+    },
+    Vertex {
+        position: [0.44147372, 0.2347359, 0.0],
+        texture_coords: [0.9414737, 0.2652641],
+    },
 ];
+
+const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
 
 impl State {
     async fn new(window: Arc<Window>) -> State {
@@ -171,7 +183,7 @@ impl State {
         });
 
         let camera = Camera {
-            eye: (0.0, 1.0, 2.0).into(),
+            eye: (0.0, 0.0, 2.0).into(),
             target: (0.0, 0.0, 0.0).into(),
             up: cgmath::Vector3::unit_y(),
             aspect: surface_config.width as f32 / surface_config.height as f32,
@@ -274,6 +286,13 @@ impl State {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let num_indices = INDICES.len() as u32;
         let num_vertices = VERTICES.len() as u32;
 
         State {
@@ -286,6 +305,8 @@ impl State {
             is_surface_configured: false,
             render_pipeline,
             vertex_buffer,
+            index_buffer,
+            num_indices,
             num_vertices,
             diffuse_bind_group,
             diffuse_texture,
@@ -377,9 +398,11 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
             render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
-            render_pass.draw(0..self.num_vertices, 0..1);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish())); //accept anything that implements IntoIter
